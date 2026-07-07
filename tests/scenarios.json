@@ -1,0 +1,44 @@
+{
+  "dataset": "data/sales.csv",
+  "scenarios": [
+    {
+      "id": "avg_price_category",
+      "query": "Which product category has the highest average unit price?",
+      "rationale": "Deterministic groupby+mean. Electronics (mix of 1200/800/450) is clearly highest.",
+      "expect_status": "answered",
+      "expect_keywords_any": ["electronics"],
+      "expect_findings_min": 1
+    },
+    {
+      "id": "total_revenue",
+      "query": "What is the total net revenue across all orders? Net revenue = units * unit_price * (1 - discount).",
+      "rationale": "Tests a defined-formula computation. Ground-truth total computed in the evaluator.",
+      "expect_status": "answered",
+      "expect_numeric": {"value": 77436.5, "tolerance": 1.0},
+      "expect_findings_min": 1
+    },
+    {
+      "id": "top_region_by_revenue",
+      "query": "Which region generated the most net revenue (units * unit_price * (1 - discount))?",
+      "rationale": "Groupby with a derived column, then argmax over regions.",
+      "expect_status": "answered",
+      "expect_keywords_any": ["north", "south", "east", "west"],
+      "expect_findings_min": 1
+    },
+    {
+      "id": "monthly_trend",
+      "query": "Is there a monthly trend in the number of units sold? Summarize units sold per month.",
+      "rationale": "Requires parsing the date column to a month period and aggregating - exercises multi-step reasoning and likely a dtype fix.",
+      "expect_status": "answered",
+      "expect_keywords_any": ["month", "january", "february", "march", "april", "2024-01", "2024-02"],
+      "expect_findings_min": 1
+    },
+    {
+      "id": "ambiguous_best",
+      "query": "Which product is the best?",
+      "rationale": "Genuinely ambiguous ('best' by revenue? units? margin?). A good agent asks a clarifying question rather than guessing.",
+      "expect_status_any": ["needs_clarification", "answered"],
+      "expect_keywords_any": ["best", "revenue", "units", "mean", "define", "metric", "top"]
+    }
+  ]
+}
