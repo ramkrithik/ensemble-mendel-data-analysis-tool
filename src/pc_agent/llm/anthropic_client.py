@@ -1,10 +1,9 @@
 """Anthropic-backed LLM clients: direct API and Amazon Bedrock.
 
-Both share one request/response normalisation path (`_BaseAnthropicClient`) and
-differ only in how the underlying SDK client is constructed. The Anthropic
-Python SDK already retries 408/409/429/5xx with exponential backoff and applies
-the request timeout we pass; we layer a small amount of our own error mapping on
-top so the agent only ever sees an :class:`LLMError`.
+Both share one request/response normalisation path and differ only in how the
+underlying SDK client is constructed. The Anthropic SDK already retries
+408/409/429/5xx with exponential backoff and honours the request timeout; we map
+its exceptions to :class:`LLMError` so the agent only ever sees one error type.
 """
 
 from __future__ import annotations
@@ -14,8 +13,8 @@ from typing import Any
 
 import anthropic
 
-from data_agent.config import AppConfig
-from data_agent.llm.base import LLMError, LLMResponse, ToolCall
+from pc_agent.config import AppConfig
+from pc_agent.llm.base import LLMError, LLMResponse, ToolCall
 
 log = logging.getLogger(__name__)
 
@@ -29,14 +28,12 @@ class _BaseAnthropicClient:
         self.model = config.model
 
     def _supports_temperature(self) -> bool:
-        # Newer adaptive-thinking models (opus-4-6+, sonnet-4-6+, fable) reject
-        # explicit sampling params. Only send temperature to models where it is
-        # safe; when unsure, omit it. This keeps the client working across the
-        # whole model range without a 400.
+        # Newer adaptive-thinking models reject explicit sampling params. Only
+        # send temperature to models where it's safe; when unsure, omit it.
         m = self.model.lower()
         safe_markers = (
-            "claude-3", "claude-sonnet-4-0", "claude-opus-4-0",
-            "claude-opus-4-1", "sonnet-4-20", "opus-4-20",
+            "claude-3", "claude-sonnet-4-0", "claude-opus-4-0", "claude-opus-4-1",
+            "sonnet-4-20", "opus-4-20",
         )
         return any(marker in m for marker in safe_markers)
 
@@ -60,13 +57,13 @@ class _BaseAnthropicClient:
 
         try:
             resp = self._client.messages.create(**kwargs)
-        except anthropic.APIStatusError as exc:  # 4xx/5xx after retries
+        except anthropic.APIStatusError as exc:
             raise LLMError(
                 f"LLM request failed (HTTP {exc.status_code}): {exc.message}"
             ) from exc
-        except anthropic.APIConnectionError as exc:  # network, after retries
+        except anthropic.APIConnectionError as exc:
             raise LLMError(f"LLM connection error: {exc}") from exc
-        except anthropic.AnthropicError as exc:  # anything else from the SDK
+        except anthropic.AnthropicError as exc:
             raise LLMError(f"LLM error: {exc}") from exc
 
         return self._normalise(resp)
@@ -113,11 +110,7 @@ class AnthropicDirectClient(_BaseAnthropicClient):
 
 
 class AnthropicBedrockClient(_BaseAnthropicClient):
-    """Anthropic on Amazon Bedrock via the AnthropicBedrock client.
-
-    Credentials come from the standard AWS chain (env vars, ~/.aws, or an
-    assumed role) — nothing key-shaped is read here.
-    """
+    """Anthropic on Amazon Bedrock. Credentials from the standard AWS chain."""
 
     def __init__(self, config: AppConfig) -> None:
         client = anthropic.AnthropicBedrock(

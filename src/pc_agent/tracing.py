@@ -1,10 +1,10 @@
 """Structured, inspectable tracing of every agent step.
 
-Each run gets a :class:`Tracer` that both logs human-readable lines (for the
-console) and appends structured JSONL records to ``TRACE_DIR/<run_id>.jsonl``.
-The JSONL trace is the artefact the evaluation harness and the "agent run
-report" read back — it captures the full reasoning chain: model thoughts, tool
-calls with arguments, observations, and the final answer.
+Each run gets a :class:`Tracer` that logs human-readable lines and appends
+structured JSONL records to ``TRACE_DIR/<run_id>.jsonl``. The JSONL trace is the
+artefact the UI and the agent-run report read back — it captures the full
+reasoning chain: model thoughts, tool calls with arguments, observations
+(search results, compatibility reports), proposed builds, and feedback rounds.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-log = logging.getLogger("data_agent.trace")
+log = logging.getLogger("pc_agent.trace")
 
 
 @dataclass
@@ -24,8 +24,7 @@ class TraceEvent:
     """One entry in the reasoning trace."""
 
     step: int
-    kind: str  # "run_start" | "model_thought" | "tool_call" | "observation" |
-    #            "clarifying_question" | "final_answer" | "error" | "run_end"
+    kind: str
     data: dict[str, Any] = field(default_factory=dict)
     ts: float = field(default_factory=time.time)
 
@@ -38,7 +37,6 @@ class Tracer:
         self.events: list[TraceEvent] = []
         trace_dir.mkdir(parents=True, exist_ok=True)
         self._path = trace_dir / f"{run_id}.jsonl"
-        # Truncate any prior file for this run id.
         self._path.write_text("", encoding="utf-8")
 
     @property
@@ -53,6 +51,6 @@ class Tracer:
         log.info("[step %d] %s %s", step, kind, _short(data))
 
 
-def _short(data: dict[str, Any], limit: int = 160) -> str:
+def _short(data: dict[str, Any], limit: int = 200) -> str:
     text = json.dumps(data, default=str)
     return text if len(text) <= limit else text[:limit] + "..."

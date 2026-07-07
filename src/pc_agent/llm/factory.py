@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from data_agent.config import AppConfig
-from data_agent.llm.anthropic_client import (
+from pc_agent.config import AppConfig
+from pc_agent.llm.anthropic_client import (
     AnthropicBedrockClient,
     AnthropicDirectClient,
 )
-from data_agent.llm.base import LLMClient
+from pc_agent.llm.base import LLMClient
 
 
 def build_client(config: AppConfig) -> LLMClient:

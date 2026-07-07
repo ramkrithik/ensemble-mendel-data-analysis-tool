@@ -1,17 +1,17 @@
-"""Streamlit UI for the data-analysis agent.
+"""Streamlit UI for the PC-build agent.
 
 Run with:  uv run streamlit run app/streamlit_app.py
 
-Upload (or point at) a CSV, ask a question, and watch the agent's reasoning
-chain — model thoughts, generated code, execution results — stream into the page
-as it works. State (dataset + conversation) persists across reruns via
-``st.session_state``, giving simple conversation persistence within a session.
+A chat interface over the agent. The conversation (and the agent's own state)
+persists across Streamlit reruns via ``st.session_state``, so follow-up messages
+act as feedback and the agent amends the previous build. Each proposed build is
+rendered as a table; the full reasoning trace for every turn is available in an
+expander.
 """
 
 from __future__ import annotations
 
 import sys
-import tempfile
 from pathlib import Path
 
 import streamlit as st
@@ -19,92 +19,95 @@ import streamlit as st
 # Allow `streamlit run app/streamlit_app.py` from the repo root without install.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from data_agent.agent import DataAnalysisAgent  # noqa: E402
-from data_agent.config import load_config  # noqa: E402
-from data_agent.llm import build_client  # noqa: E402
-from data_agent.tools.dataset import Dataset  # noqa: E402
+from pc_agent.agent import PCBuildAgent  # noqa: E402
+from pc_agent.catalog import Catalog  # noqa: E402
+from pc_agent.config import load_config  # noqa: E402
+from pc_agent.llm import build_client  # noqa: E402
 
-st.set_page_config(page_title="Data Analysis Agent", page_icon="📊", layout="wide")
-st.title("📊 Data Analysis Agent")
-st.caption("Upload a CSV, ask a question — the agent writes & runs pandas to answer.")
-
-
-@st.cache_resource(show_spinner=False)
-def _config():
-    return load_config()
+st.set_page_config(page_title="PC Build Agent", page_icon="🖥️", layout="centered")
+st.title("🖥️ PC Build Agent")
+st.caption("Describe your ideal PC. Give feedback to amend the build — it remembers.")
 
 
-@st.cache_resource(show_spinner=False)
-def _llm(_provider: str, _model: str):
-    # Keyed on provider+model so a config change rebuilds the client.
-    return build_client(_config())
+@st.cache_resource(show_spinner="Loading catalog & model…")
+def _make_agent():
+    cfg = load_config()
+    catalog = Catalog.load(cfg.data_dir)
+    llm = build_client(cfg)
+    return PCBuildAgent(catalog, llm, cfg), cfg
 
 
-def _load_dataset(uploaded, fallback_path: str) -> Dataset | None:
-    if uploaded is not None:
-        tmp = Path(tempfile.gettempdir()) / uploaded.name
-        tmp.write_bytes(uploaded.getvalue())
-        return Dataset.from_csv(tmp)
-    if fallback_path.strip():
-        return Dataset.from_csv(fallback_path.strip())
-    return None
-
-
-cfg = _config()
+try:
+    agent, cfg = _make_agent()
+except (FileNotFoundError, ValueError) as exc:
+    st.error(f"Startup failed: {exc}")
+    st.stop()
 
 with st.sidebar:
     st.header("Configuration")
     st.write(f"**Provider:** `{cfg.provider}`")
     st.write(f"**Model:** `{cfg.model}`")
     st.write(f"**Max steps:** {cfg.agent_max_steps}")
-    uploaded = st.file_uploader("Upload CSV", type=["csv"])
-    fallback = st.text_input("…or path to a CSV", value="data/sales.csv")
+    st.write(f"**Dataset:** `{cfg.data_dir}/`")
+    if st.button("🔄 New conversation"):
+        st.session_state.pop("history", None)
+        _make_agent.clear()
+        st.rerun()
 
-try:
-    dataset = _load_dataset(uploaded, fallback)
-except (FileNotFoundError, ValueError) as exc:
-    st.error(f"Could not load dataset: {exc}")
-    st.stop()
+# Conversation history: list of dicts {role, kind, payload}
+if "history" not in st.session_state:
+    st.session_state.history = []
 
-if dataset is None:
-    st.info("Upload a CSV or provide a path in the sidebar to begin.")
-    st.stop()
 
-with st.expander("Dataset profile", expanded=False):
-    st.dataframe(dataset.df.head(20), use_container_width=True)
-    st.code(dataset.profile(), language="text")
+def _render_build(turn) -> None:
+    build = turn.build
+    rows = [
+        {"Category": p.category, "Part": p.name,
+         "Price": f"${p.price:,.2f}" if p.price is not None else "n/a"}
+        for p in build.parts
+    ]
+    st.table(rows)
+    st.markdown(f"**Total: ${build.total_price:,.2f}**")
+    if turn.report and turn.report.warnings:
+        for w in turn.report.warnings:
+            st.info(w.detail)
+    if turn.message:
+        st.markdown(f"**Why:** {turn.message}")
 
-question = st.text_input(
-    "Ask a question about this dataset",
-    placeholder="e.g. Which region generated the most net revenue?",
-)
 
-if st.button("Analyse", type="primary", disabled=not question.strip()):
-    llm = _llm(cfg.provider, cfg.model)
-    agent = DataAnalysisAgent(dataset, llm, cfg)
+# Replay history
+for item in st.session_state.history:
+    with st.chat_message(item["role"]):
+        if item["kind"] == "text":
+            st.markdown(item["payload"])
+        elif item["kind"] == "build":
+            _render_build(item["payload"])
+            with st.expander("Reasoning trace"):
+                tp = Path(item["payload"].trace_path)
+                if tp.is_file():
+                    st.code(tp.read_text(encoding="utf-8"), language="json")
 
-    with st.status("Agent working…", expanded=True) as status:
-        st.write("Running reason → plan → act → observe loop…")
-        result = agent.run(question)
-        status.update(label=f"Done — {result.status}", state="complete")
+prompt = st.chat_input("e.g. A 1080p gaming PC under $1200, prefer AMD")
+if prompt:
+    st.session_state.history.append({"role": "user", "kind": "text", "payload": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
 
-    if result.status == "needs_clarification":
-        st.warning(f"**Clarifying question:** {result.clarifying_question}")
-    elif result.status == "answered":
-        st.subheader("Answer")
-        st.write(result.answer)
-        if result.key_findings:
-            st.subheader("Key findings")
-            for f in result.key_findings:
-                st.markdown(f"- {f}")
-        if result.methodology:
-            st.caption(f"Methodology: {result.methodology}")
-    else:
-        st.error(result.answer)
-
-    # Show the full reasoning trace read back from the JSONL file.
-    with st.expander("Reasoning trace", expanded=False):
-        trace_file = Path(result.trace_path)
-        if trace_file.is_file():
-            st.code(trace_file.read_text(encoding="utf-8"), language="json")
-    st.caption(f"Run {result.run_id} · {result.steps_used} steps · trace: {result.trace_path}")
+    with st.chat_message("assistant"):
+        with st.spinner("Reasoning → searching → checking compatibility…"):
+            turn = agent.chat(prompt)
+        if turn.status == "proposed" and turn.build is not None:
+            _render_build(turn)
+            with st.expander("Reasoning trace"):
+                tp = Path(turn.trace_path)
+                if tp.is_file():
+                    st.code(tp.read_text(encoding="utf-8"), language="json")
+            st.session_state.history.append({"role": "assistant", "kind": "build", "payload": turn})
+        elif turn.status == "needs_clarification":
+            st.warning(f"❓ {turn.clarifying_question}")
+            st.session_state.history.append(
+                {"role": "assistant", "kind": "text", "payload": f"❓ {turn.clarifying_question}"})
+        else:
+            st.error(turn.message)
+            st.session_state.history.append(
+                {"role": "assistant", "kind": "text", "payload": turn.message})

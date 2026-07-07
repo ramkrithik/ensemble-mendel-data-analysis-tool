@@ -1,57 +1,41 @@
-# Agent Run Report — Data Analysis Agent
+# Agent Run Report — PC Build Agent
 
-This report documents the design of the agent, and shows **real traces and
-evaluation results** captured from live runs against **Amazon Bedrock**
-(`us.anthropic.claude-sonnet-4-6`). Every number below was produced by the agent
-computing over `data/sales.csv` — none are illustrative.
+Real traces and evaluation results captured from **live runs against Amazon
+Bedrock** (`us.anthropic.claude-sonnet-4-6`). Every build, price, and verdict
+below was produced by the agent reasoning over the vendored components dataset —
+nothing here is illustrative.
 
 ---
 
 ## 1. Architecture
 
 ```
-   CSV ─► Dataset.profile()  ─────────────►  System prompt (goal, rules, CoT
-          (shape, dtypes,                     contract, data profile)
-           sample, stats)                              │
-                                                        │
-   question ───────────────────────────────────────────┤
-                                                        ▼
-              ┌──────────────────── AGENT LOOP (agent.py) ────────────────────┐
-              │  REASON → PLAN → ACT (tool_use) → OBSERVE (tool_result) → …    │
-              │                                                               │
-              │   tool router:                                                │
-              │     run_python            → CodeExecutor (pandas sandbox)     │
-              │     ask_clarifying_question → pause, return to user           │
-              │     final_answer          → structured close-out, done        │
-              │                                                               │
-              │   guard-rails: step budget · input validation · refusal       │
-              │                handling · LLM-error fallback                  │
-              └──────────────────────────────┬────────────────────────────────┘
-                                             │ every step
-                                             ▼
-                                Tracer → traces/<run_id>.jsonl
-                                             │
-                    ┌────────────────────────┼────────────────────────┐
-                    ▼                        ▼                         ▼
-                CLI              Streamlit UI (app/)          Evaluator (evaluate.py)
+   customer message
+        │
+   Catalog.load(data/*.csv)  ── normalise ──►  derive CPU socket from microarch,
+        │                                       parse memory "count,size" + DDR gen,
+        │                                       canonical form factors, assign uids
+        ▼
+   PCBuildAgent  (reason → plan → act → observe → respond)
+        │  tools:
+        │    search_components   → Catalog.search   (grounded part lookup, returns uids)
+        │    check_compatibility → CompatibilityChecker (deterministic verdict)
+        │    ask_clarifying_question (requirement gathering)
+        │    propose_build       → re-checked by the engine before delivery
+        │
+        ▼
+   Deterministic compatibility engine: socket match, form-factor fit, memory
+   DDR/capacity, PSU headroom, budget, essentials present.
+        │
+        ▼
+   TurnResult (build + report + rationale)  ──► state persists across turns
+        │                                        so the next message is FEEDBACK
+        └─► Tracer → traces/<run_id>.jsonl  (full reasoning chain, every step)
 ```
 
-**Goal.** Answer natural-language questions about a CSV with evidence the agent
-computes itself.
-
-**Tools.** `run_python` (execute pandas, observe stdout/traceback — the core
-act/observe surface), `ask_clarifying_question` (pause on genuine ambiguity),
-`final_answer` (structured, machine-checkable output).
-
-**LLM abstraction.** The loop talks only to an `LLMClient` interface; a factory
-returns either the direct Anthropic client or the Bedrock client from one env
-var (`LLM_PROVIDER`). This report used the Bedrock implementation.
-
-**Advanced techniques.** (1) *Self-reflection / self-correction* — execution
-tracebacks are fed back and the model fixes its own code (demonstrated live in
-§3.2). (2) *Chain-of-thought* — the system prompt mandates an explicit
-reason→plan→act→observe cycle, seeded by a few-shot example. (3) *Structured
-output* — tool schemas + a typed `AgentResult`.
+**Goal:** a compatible, budget-appropriate build from real parts, amendable on
+feedback. **Compatibility is decided by code, not the model.** **Parts are
+referenced by stable `uid`** because names are not unique in this dataset.
 
 ---
 
@@ -59,127 +43,129 @@ output* — tool schemas + a typed `AgentResult`.
 
 | Decision | Rationale | Trade-off |
 |---|---|---|
-| Custom loop (no LangChain/LangGraph) | Every step explicit and trivially traceable; stronger demonstration of the mechanics. | More hand-written code. |
-| Provider abstraction (Anthropic + Bedrock) | One env var swaps backends; meets the Bedrock requirement without touching the loop. | A thin interface to maintain. |
-| `run_python` grounds every answer | Real computation → no hallucinated statistics. | Needs sandboxing. |
-| In-process executor + denylist | Zero-dependency, fully offline, enough to demo the loop safely over trusted data. | **Not a hard security boundary** (documented in README → Security). |
-| `ask_clarifying_question` tool | Agent pauses on real ambiguity instead of guessing (see §4, scenario 5). | Extra round-trip when it fires. |
-| `final_answer` structured tool | Machine-checkable output for the evaluator; clean UI. | Model must be steered to call it. |
+| Deterministic compatibility engine, re-run before delivery | Correctness can't depend on the LLM "reasoning" a mismatch away | Curated rules, not exhaustive |
+| Parts referenced by `uid`, not name | Names are not unique (see §5) → prevents mispricing | Model must echo uids (prompt + schema enforce it) |
+| CPU socket derived from `microarchitecture` | `cpu.csv` has **no socket column** | Curated arch→socket map; unknown → warning, not crash |
+| Custom loop, no framework | Every step explicit & traceable | More code |
+| Provider abstraction (Anthropic + Bedrock) | One env var swaps backends | Thin interface to maintain |
+| Feedback via persistent conversation state | Natural "amend the build" UX | Must keep tool_use/tool_result history valid (see §5) |
 
 ---
 
-## 3. Sample agent traces (real)
+## 3. Full agent trace (real) — "1080p gaming PC, ~$1200, prefer AMD"
 
-### 3.1 Straight-line run — "Which region generated the most net revenue?"
+Run `f03e33485962`, `bedrock:us.anthropic.claude-sonnet-4-6`, 8 steps → **compatible $825.68 build**.
 
-Run `95b25e0fe876`, provider `bedrock:us.anthropic.claude-sonnet-4-6`, **2 steps**.
-
-**Step 1 — ACT (`run_python`)**, intent *"Calculate net revenue per region and rank them."*
-```python
-df['net_revenue'] = df['units'] * df['unit_price'] * (1 - df['discount'])
-region_revenue = df.groupby('region')['net_revenue'].sum().sort_values(ascending=False)
-print(region_revenue)
+```
+user: A 1080p gaming PC, budget about $1200, prefer AMD.
+ s1 THINK  Search components, starting with AMD CPUs and AM5 motherboards to define the platform.
+ s1 ACT    search_components {category: cpu, socket: AM5, max_price: 250}
+ s1 ACT    search_components {category: motherboard, socket: AM5, max_price: 180}
+ s1 ACT    search_components {category: video-card, keyword: "RX 7600"}
+ s2 THINK  No RX 7600 found; broaden the AMD GPU search and grab memory/storage/PSU/case.
+ s2 ACT    search_components {memory ddr_gen:5 min_total_gb:16}, {internal-hard-drive SSD}, {power-supply}, {case}
+ s3–s6     Iteratively widens the GPU search (RX 7→AMD→by price→RTX) as keyword filters return empty.
+ s7 THINK  "An RTX 3060 12GB at $299.97 is a great 1080p card. Now check compatibility."
+ s7 ACT    check_compatibility {cpu: cpu#3, motherboard: motherboard#98, memory: memory#241,
+                                video-card: video-card#0, internal-hard-drive:..., power-supply:..., case:...}
+ s7 OBSERVE COMPATIBLE — no issues found.
+ s8 ACT    propose_build (same parts)  →  total $825.68, compatible=True
+ END       status=proposed
 ```
 
-**Step 1 — OBSERVE** (`ok=true`):
-```
-region
-East     22955.0
-North    19839.0
-South    19665.0
-West     14977.5
-Name: net_revenue, dtype: float64
-```
-
-**Step 2 — RESPOND (`final_answer`)**:
-> The **East region** generated the most net revenue at **$22,955.00**, calculated
-> as units × unit_price × (1 − discount) across all orders.
-> Findings: East $22,955.00 (highest); North $19,839.00; South $19,665.00; West
-> $14,977.50 (lowest).
-
-✅ Independently verified against the CSV: East = 22955.0. Correct.
-
-### 3.2 Self-correction in the wild — "Is there a monthly trend in units sold?"
-
-Run `baf241714ee8`, **4 steps** — this run demonstrates the loop's core value:
-the agent wrote code that raised, read the traceback, and fixed itself.
-
-| Step | Action | Result |
-|---|---|---|
-| 1 | `run_python` — units per month | ✅ ok |
-| 2 | `run_python` — month-over-month change | ❌ **`NameError: name 'monthly_units' is not defined`** |
-| 3 | `run_python` — same intent, corrected code | ✅ ok |
-| 4 | `final_answer` | Delivered |
-
-Verbatim traceback the agent observed at step 2 and recovered from:
-```
-File "<agent_code>", line 3, in <module>
-NameError: name 'monthly_units' is not defined
-```
-The model had referenced a variable from a *previous* snippet (each `run_python`
-call is an independent execution), saw the error, re-declared it, and continued —
-exactly the reason→act→**observe-error**→correct behaviour the domain was chosen
-to showcase.
-
-### 3.3 Clarifying question — "Which product is the best?"
-
-Run `1bc8e7697dea`. The agent recognised genuine ambiguity and, instead of
-guessing a metric, called `ask_clarifying_question`:
-
-> **Question:** How would you like to define "best" — by total revenue (units ×
-> unit_price after discount), total units sold, number of orders, or some other
-> metric?
->
-> **Why:** The ranking of products can differ significantly depending on the
-> metric used. A cheap product sold in high volume may top the "units sold" list,
-> while an expensive product with fewer sales may lead on revenue.
+Two things worth noting from the real run:
+- The model references parts by **uid** (`cpu#3`, `video-card#0`), exactly as the
+  schema requires.
+- The GPU search genuinely took several tries because this dataset has many
+  null-priced video-card rows (priced-only filtering hides them); the agent
+  **adapted its search strategy** across steps 2–6 rather than giving up — visible
+  multi-step reasoning.
 
 ---
 
-## 4. Evaluation results (real)
+## 4. Feedback loop (real) — "make it cheaper, under $750"
 
-Command: `uv run data-agent-eval --scenarios tests/scenarios.json`
-Provider: `bedrock:us.anthropic.claude-sonnet-4-6`. **Result: 5/5 passed.**
+Two-turn conversation; state persists so turn 2 is treated as an amendment.
 
-| # | Scenario | What it tests | Status | Checks |
-|---|---|---|---|---|
-| 1 | `avg_price_category` | groupby + mean | answered | keyword `electronics` ✓, findings ≥1 ✓ |
-| 2 | `total_revenue` | defined-formula sum vs ground truth | answered | numeric **77436.5** within 1.0 ✓ |
-| 3 | `top_region_by_revenue` | derived column + argmax | answered | region keyword ✓, findings ≥1 ✓ |
-| 4 | `monthly_trend` | date parsing + aggregation (self-corrected) | answered | keyword `month` ✓, findings ≥1 ✓ |
-| 5 | `ambiguous_best` | should ask, not guess | **needs_clarification** | status ✓, keyword ✓ |
+| | Total | CPU | Motherboard | GPU | PSU | Case |
+|---|---|---|---|---|---|---|
+| **Turn 1** ("gaming PC ~$1000, AMD") | **$789.40** | cpu#3 | motherboard#98 | video-card#67 | power-supply#28 | case#125 |
+| **Turn 2** ("make it cheaper, under $750") | **$593.02** | cpu#37 | motherboard#181 | video-card#37 | power-supply#51 | case#113 |
 
-Scenario 2's numeric check is the strongest signal: the agent's reported total
-matched the independently-computed ground truth (77,436.5) to within tolerance,
-confirming the answer was *computed*, not approximated.
+Turn-2 first thought (verbatim):
+> "Let me swap out the pricier parts — I'll try a cheaper CPU, motherboard, GPU,
+> and PSU while keeping the RAM and storage that already fit well."
 
-Every scenario writes a full JSONL trace (paths printed by the evaluator) so each
-reasoning chain is auditable.
+It **kept the parts that still fit** (memory#241, internal-hard-drive#188), swapped
+only the expensive ones, re-ran the compatibility check, and delivered a
+compatible build **$196 cheaper** and under the new target — the core "take
+feedback and amend" requirement, verified live.
 
 ---
 
-## 5. Robustness (verified offline, `uv run pytest` — 15/15 passing)
+## 5. A real bug this design caught (and fixed)
 
-- **LLM failure** — an injected outage (`test_agent_handles_llm_failure_gracefully`)
-  returns a graceful fallback answer, not a crash.
-- **Self-correction** — `test_agent_full_loop_with_self_correction` drives a
-  broken-code → traceback → fix → finalise loop against a scripted LLM and asserts
-  the traceback appears in the trace.
-- **Guard-rails** — dangerous code (`import os`, `open(...)`, dunder access,
-  file writes) is refused (`test_executor_blocks_dangerous_code`); the step budget
-  is enforced (`test_agent_enforces_step_budget`); empty questions are rejected.
-- **Refusals** — `stop_reason == "refusal"` is handled before reading content.
-- **Retries/timeouts** — delegated to the Anthropic SDK (429/5xx/network) with the
-  configured `LLM_TIMEOUT_SECONDS` / `LLM_MAX_RETRIES`.
+The first live feedback run failed in an instructive way, and fixing it hardened
+the system:
+
+1. **Symptom:** turn 2 asked for "cheaper" but the total went *up* to $1088, and
+   the model's own thought noted "the compatibility engine is counting … pricing
+   differently."
+2. **Root cause:** the model had selected a $250 GPU from search but passed the
+   **name** `"Gigabyte GAMING OC"` to `propose_build`. That name is shared by **93
+   different cards** in the dataset ($250–$2809); name-based lookup returned the
+   first ($729), mispricing the build.
+3. **Fix:** every catalog row gets a stable **`uid`** (`video-card#67`);
+   `search_components` returns it, and `check_compatibility`/`propose_build`
+   reference parts by uid. Unresolved references now raise a `part_not_found`
+   error instead of silently mispricing.
+
+A second bug surfaced first: a terminal/interrupting tool returned without
+emitting a `tool_result` for its `tool_use`, leaving dangling `tool_use` blocks
+that made the **next (feedback) turn** 400. Fixed by always closing out every
+`tool_use` with a `tool_result` before returning. Both fixes are covered by
+offline tests (`test_agent_rejects_incompatible_proposal_then_recovers`,
+`test_agent_feedback_loop_amends`).
 
 ---
 
-## 6. Summary
+## 6. Evaluation results (real)
 
-The agent runs end-to-end on Amazon Bedrock, answers grounded in computed
-evidence, self-corrects on execution errors, asks for clarification on genuine
-ambiguity, and passes 5/5 evaluation scenarios plus 15/15 offline tests. The main
-production gap is the code sandbox: the in-process executor is defence-in-depth
-for a trusted-data demo, and the narrow `CodeExecutor` interface is designed so it
-can be swapped for a container or Anthropic's server-side code-execution tool
-without touching the agent loop.
+`uv run pc-agent-eval --scenarios tests/scenarios.json`,
+`bedrock:us.anthropic.claude-sonnet-4-6`. **5/5 passed.** The harness re-runs the
+deterministic compatibility check on every delivered build.
+
+| # | Scenario | Tests | Result |
+|---|---|---|---|
+| 1 | `amd_gaming_midrange` | compatible + within $1200 + AMD + all categories | ✅ compatible, **$825.68** |
+| 2 | `office_no_gpu` | compatible budget build, GPU optional | ✅ compatible, **$269.13** |
+| 3 | `itx_intel_build` | Mini-ITX form-factor fit + Intel socket | ✅ compatible, Intel |
+| 4 | `infeasible_budget` ($150 4K rig) | must not silently ship a broken/over-budget build | ✅ delivered closest build + stated budget trade-off |
+| 5 | `feedback_make_cheaper` | amended build compatible **and** cheaper | ✅ **$593.02 < $789.40** |
+
+Every scenario writes JSONL traces (paths printed by the evaluator) for audit.
+
+---
+
+## 7. Robustness (offline, `uv run pytest` — 18/18 passing)
+
+- **Compatibility rules**: socket mismatch, missing essentials, over-budget
+  (warning vs error), power scaling with GPU — all asserted against the real data.
+- **Normalisation**: socket derivation, memory `"count,size"`/DDR parsing, case
+  form-factor acceptance.
+- **Agent loop**: valid proposal; **incompatible proposal → engine rejects →
+  model recovers** within one turn; clarifying question; **feedback loop amends**;
+  injected LLM outage → graceful fallback; empty-input rejection.
+
+---
+
+## 8. Summary
+
+The agent runs end-to-end on Amazon Bedrock: it gathers requirements, grounds
+every part in a dataset query, guarantees compatibility with a deterministic
+engine (re-checked before delivery), handles an infeasible budget honestly, and
+amends builds on feedback across a persistent conversation. 5/5 live eval
+scenarios and 18/18 offline tests pass. The main scoped-down area is the rule set
+and power model — deliberately curated rather than exhaustive — and the in-repo
+catalog is the 8 build-relevant categories; both are structured so they can be
+extended without touching the agent loop.

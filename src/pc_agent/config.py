@@ -1,9 +1,8 @@
 """Centralised, externalised configuration.
 
-Every tunable — provider, model, temperature, loop limits — is read from the
-environment (optionally via a ``.env`` file) here and nowhere else. No module
-reaches for ``os.environ`` on its own, so there is exactly one place to look
-when you want to know how the agent is configured.
+Every tunable — provider, model, temperature, loop limits, dataset location — is
+read from the environment (optionally via a ``.env`` file) here and nowhere else.
+No other module reaches for ``os.environ``.
 """
 
 from __future__ import annotations
@@ -17,11 +16,7 @@ from dotenv import load_dotenv
 
 @dataclass(frozen=True)
 class AppConfig:
-    """Immutable snapshot of all runtime configuration.
-
-    Frozen so that a config, once loaded, cannot be mutated halfway through a
-    run — the trace and the behaviour always agree.
-    """
+    """Immutable snapshot of all runtime configuration."""
 
     provider: str  # "anthropic" | "bedrock"
     model: str
@@ -31,6 +26,7 @@ class AppConfig:
     timeout_seconds: float
     max_retries: int
     trace_dir: Path
+    data_dir: Path
 
     # Provider-specific
     anthropic_api_key: str | None
@@ -46,6 +42,7 @@ class AppConfig:
             "agent_max_steps": self.agent_max_steps,
             "timeout_seconds": self.timeout_seconds,
             "max_retries": self.max_retries,
+            "data_dir": str(self.data_dir),
             "aws_region": self.aws_region if self.provider == "bedrock" else None,
         }
 
@@ -73,8 +70,7 @@ def _get_int(name: str, default: int) -> int:
 def load_config(env_file: str | os.PathLike[str] | None = ".env") -> AppConfig:
     """Load configuration from the environment, layering in ``.env`` if present.
 
-    Real environment variables always win over ``.env`` (``override=False``), so
-    ``LLM_PROVIDER=bedrock uv run data-agent ...`` behaves as expected.
+    Real environment variables win over ``.env`` (``override=False``).
     """
     if env_file is not None and Path(env_file).is_file():
         load_dotenv(env_file, override=False)
@@ -87,7 +83,7 @@ def load_config(env_file: str | os.PathLike[str] | None = ".env") -> AppConfig:
 
     if provider == "bedrock":
         model = os.environ.get(
-            "BEDROCK_MODEL", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+            "BEDROCK_MODEL", "us.anthropic.claude-sonnet-4-6"
         )
     else:
         model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5")
@@ -97,10 +93,11 @@ def load_config(env_file: str | os.PathLike[str] | None = ".env") -> AppConfig:
         model=model,
         temperature=_get_float("LLM_TEMPERATURE", 0.0),
         max_tokens=_get_int("LLM_MAX_TOKENS", 4096),
-        agent_max_steps=_get_int("AGENT_MAX_STEPS", 8),
+        agent_max_steps=_get_int("AGENT_MAX_STEPS", 12),
         timeout_seconds=_get_float("LLM_TIMEOUT_SECONDS", 60.0),
         max_retries=_get_int("LLM_MAX_RETRIES", 3),
         trace_dir=Path(os.environ.get("TRACE_DIR", "traces")),
+        data_dir=Path(os.environ.get("DATA_DIR", "data")),
         anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY") or None,
         aws_region=os.environ.get("AWS_REGION", "us-east-1"),
     )

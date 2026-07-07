@@ -1,44 +1,50 @@
 {
-  "dataset": "data/sales.csv",
   "scenarios": [
     {
-      "id": "avg_price_category",
-      "query": "Which product category has the highest average unit price?",
-      "rationale": "Deterministic groupby+mean. Electronics (mix of 1200/800/450) is clearly highest.",
-      "expect_status": "answered",
-      "expect_keywords_any": ["electronics"],
-      "expect_findings_min": 1
+      "id": "amd_gaming_midrange",
+      "query": "A 1080p gaming PC, budget about $1200, prefer AMD.",
+      "rationale": "Happy path. Should deliver a compatible AMD build with a discrete GPU, on budget.",
+      "expect_status": "proposed",
+      "expect_compatible": true,
+      "expect_has_categories": ["cpu", "motherboard", "memory", "power-supply", "case", "internal-hard-drive", "video-card"],
+      "expect_within_budget": 1200,
+      "expect_cpu_brand": "AMD"
     },
     {
-      "id": "total_revenue",
-      "query": "What is the total net revenue across all orders? Net revenue = units * unit_price * (1 - discount).",
-      "rationale": "Tests a defined-formula computation. Ground-truth total computed in the evaluator.",
-      "expect_status": "answered",
-      "expect_numeric": {"value": 77436.5, "tolerance": 1.0},
-      "expect_findings_min": 1
+      "id": "office_no_gpu",
+      "query": "A cheap office PC for web browsing and documents, around $500. No gaming.",
+      "rationale": "Should produce a compatible budget build; a discrete GPU is optional (integrated is fine).",
+      "expect_status": "proposed",
+      "expect_compatible": true,
+      "expect_has_categories": ["cpu", "motherboard", "memory", "power-supply", "case", "internal-hard-drive"],
+      "expect_within_budget": 600
     },
     {
-      "id": "top_region_by_revenue",
-      "query": "Which region generated the most net revenue (units * unit_price * (1 - discount))?",
-      "rationale": "Groupby with a derived column, then argmax over regions.",
-      "expect_status": "answered",
-      "expect_keywords_any": ["north", "south", "east", "west"],
-      "expect_findings_min": 1
+      "id": "itx_intel_build",
+      "query": "A compact Mini ITX build with an Intel CPU, budget $1500.",
+      "rationale": "Tests form-factor reasoning (Mini ITX board must fit an ITX case) and Intel socket derivation.",
+      "expect_status": "proposed",
+      "expect_compatible": true,
+      "expect_has_categories": ["cpu", "motherboard", "memory", "power-supply", "case"],
+      "expect_cpu_brand": "Intel"
     },
     {
-      "id": "monthly_trend",
-      "query": "Is there a monthly trend in the number of units sold? Summarize units sold per month.",
-      "rationale": "Requires parsing the date column to a month period and aggregating - exercises multi-step reasoning and likely a dtype fix.",
-      "expect_status": "answered",
-      "expect_keywords_any": ["month", "january", "february", "march", "april", "2024-01", "2024-02"],
-      "expect_findings_min": 1
+      "id": "infeasible_budget",
+      "query": "A high-end 4K gaming PC with a top-tier graphics card, but my total budget is only $150.",
+      "rationale": "Infeasible: $150 cannot buy a working gaming PC. A good agent either asks to raise the budget or delivers the closest honest build and states the trade-off — it must NOT silently ship a broken/over-budget build claiming it met the ask.",
+      "expect_status_any": ["needs_clarification", "proposed"],
+      "expect_if_proposed_compatible": true,
+      "expect_keywords_any": ["budget", "trade-off", "tradeoff", "cannot", "won't fit", "wont fit", "not enough", "increase", "raise", "closest", "integrated", "minimum", "realistic"]
     },
     {
-      "id": "ambiguous_best",
-      "query": "Which product is the best?",
-      "rationale": "Genuinely ambiguous ('best' by revenue? units? margin?). A good agent asks a clarifying question rather than guessing.",
-      "expect_status_any": ["needs_clarification", "answered"],
-      "expect_keywords_any": ["best", "revenue", "units", "mean", "define", "metric", "top"]
+      "id": "feedback_make_cheaper",
+      "query": "A gaming PC around $1000, AMD.",
+      "followup": "That's nice but make it cheaper — aim for under $750.",
+      "rationale": "Tests the feedback/amend loop: the second build must be compatible and cheaper than the first, and cheaper builds should stay within (or near) the new $750 target.",
+      "expect_status": "proposed",
+      "expect_followup_status": "proposed",
+      "expect_followup_compatible": true,
+      "expect_followup_cheaper_than_first": true
     }
   ]
 }

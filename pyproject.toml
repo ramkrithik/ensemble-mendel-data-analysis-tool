@@ -1,7 +1,7 @@
 [project]
-name = "data-analysis-agent"
+name = "pc-build-agent"
 version = "0.1.0"
-description = "An agentic AI data-analysis assistant: CSV in -> clarify -> generate & run pandas code -> self-correct -> insights."
+description = "An agentic AI PC-build configurator: gather requirements -> reason over a components dataset -> propose a compatible, budget-fitting build -> take feedback and amend."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -24,15 +24,15 @@ ui = [
 dev = ["pytest>=8.0"]
 
 [project.scripts]
-data-agent = "data_agent.cli:main"
-data-agent-eval = "data_agent.evaluate:main"
+pc-agent = "pc_agent.cli:main"
+pc-agent-eval = "pc_agent.evaluate:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/data_agent"]
+packages = ["src/pc_agent"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
